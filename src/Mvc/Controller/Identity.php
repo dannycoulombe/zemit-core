@@ -10,6 +10,8 @@
 
 namespace Zemit\Mvc\Controller;
 
+use Zemit\Mvc\View;
+
 /**
  * Trait Identity
  *
@@ -19,7 +21,7 @@ namespace Zemit\Mvc\Controller;
  * @since 1.0
  * @version 1.0
  *
- * @property \Phalcon\Mvc\View|\Phalcon\Mvc\ViewInterface $view
+ * @property View $view
  * @property \Zemit\Identity $identity
  * @package Zemit\Mvc\Controller
  */

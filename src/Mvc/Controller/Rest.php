@@ -12,13 +12,15 @@ namespace Zemit\Mvc\Controller;
 
 use League\Csv\CharsetConverter;
 use Phalcon\Events\Manager;
-use Phalcon\Http\Response;
 use Phalcon\Mvc\Dispatcher;
 use Phalcon\Mvc\Model\Resultset;
 use League\Csv\Writer;
 use Phalcon\Version;
 use Zemit\Db\Profiler;
 use Zemit\Di\Injectable;
+use Zemit\Mvc\Controller\Model\Collection;
+use Zemit\Mvc\Controller\Rest\Forward;
+use Zemit\Mvc\Controller\Rest\Response;
 use Zemit\Utils;
 use Zemit\Utils\Slug;
 
@@ -38,38 +40,12 @@ use Zemit\Utils\Slug;
 class Rest extends \Zemit\Mvc\Controller
 {
     use Model;
+    use Behavior;
+    use Response;
+    use Forward;
     
-    /**
-     * Rest Bootstrap
-     */
-    public function indexAction($id = null)
-    {
-        $this->restForwarding($id);
-    }
-    
-    /**
-     * Rest bootstrap forwarding
-     *
-     * @return \Phalcon\Http\ResponseInterface
-     */
-    protected function restForwarding($id = null)
-    {
-        $id ??= $this->getParam('id');
-        
-        if ($this->request->isPost() || $this->request->isPut() || $this->request->isPatch()) {
-            $this->dispatcher->forward(['action' => 'save']);
-        }
-        else if ($this->request->isDelete()) {
-            $this->dispatcher->forward(['action' => 'delete']);
-        }
-        else if ($this->request->isGet()) {
-            if (is_null($id)) {
-                $this->dispatcher->forward(['action' => 'getList']);
-            }
-            else {
-                $this->dispatcher->forward(['action' => 'get']);
-            }
-        }
+    public function initialize() {
+        $this->whitelist = new Collection([]);
     }
     
     /**
@@ -95,7 +71,7 @@ class Rest extends \Zemit\Mvc\Controller
      */
     public function getAction($id = null)
     {
-        $modelName = $this->getModelClassName();
+        $modelName = $this->getModelClass();
         $single = $this->getSingle($id, $modelName, null);
         
         $this->view->single = $single ? $single->expose($this->getExpose()) : false;
@@ -131,7 +107,7 @@ class Rest extends \Zemit\Mvc\Controller
      */
     public function getListAction()
     {
-        $model = $this->getModelClassName();
+        $model = $this->getModelClass();
         
         /** @var Resultset $with */
         $find = $this->getFind();
@@ -168,10 +144,10 @@ class Rest extends \Zemit\Mvc\Controller
      */
     public function exportAction()
     {
-        $model = $this->getModelClassName();
+        $model = $this->getModelClass();
         $params = $this->view->getParamsToView();
         $contentType = $this->getContentType();
-        $fileName = ucfirst(Slug::generate(basename(str_replace('\\', '/', $this->getModelClassName())))) . ' List (' . date('Y-m-d') . ')';
+        $fileName = ucfirst(Slug::generate(basename(str_replace('\\', '/', $this->getModelClass())))) . ' List (' . date('Y-m-d') . ')';
         
         /** @var Resultset $with */
         $find = $this->getFind();
@@ -271,167 +247,7 @@ class Rest extends \Zemit\Mvc\Controller
         }
         
         // Something went wrong
-        throw new \Exception('Failed to export `' . $this->getModelClassName() . '` using content-type `' . $contentType . '`', 400);
-    }
-    
-    /**
-     * @param array|null $array
-     *
-     * @return array|null
-     */
-    public function flatternArrayForCsv(?array &$list = null)
-    {
-        
-        foreach ($list as $listKey => $listValue) {
-            foreach ($listValue as $column => $value) {
-                if (is_array($value) || is_object($value)) {
-                    $value = $this->concatListFieldElementForCsv($value, ' ');
-                    $list[$listKey][$column] = $this->arrayFlatten($value, $column);
-                    if (is_array($list[$listKey][$column])) {
-                        foreach ($list[$listKey][$column] as $childKey => $childValue) {
-                            $list[$listKey][$childKey] = $childValue;
-                            unset ($list[$listKey][$column]);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    /**
-     * @param array|object $list
-     * @param string|null $seperator
-     *
-     * @return array|object
-     */
-    public function concatListFieldElementForCsv($list, $seperator = ' ')
-    {
-        foreach ($list as $valueKey => $element) {
-            if (is_array($element) || is_object($element)) {
-                $lastKey = array_key_last($list);
-                if ($valueKey === $lastKey) {
-                    continue;
-                }
-                foreach ($element as $elKey => $elValue) {
-                    $list[$lastKey][$elKey] .= $seperator . $elValue;
-                    if ($lastKey != $valueKey) {
-                        unset($list[$valueKey]);
-                    }
-                }
-            }
-        }
-        
-        return $list;
-    }
-    
-    /**
-     * @param array|null $array
-     * @param string|null $alias
-     *
-     * @return array|null
-     */
-    function arrayFlatten(?array $array, ?string $alias = null)
-    {
-        $return = [];
-        foreach ($array as $key => $value) {
-            if (is_array($value)) {
-                $return = array_merge($return, $this->arrayFlatten($value, $alias));
-            }
-            else {
-                $return[$alias . '.' . $key] = $value;
-            }
-        }
-        return $return;
-    }
-    
-    /**
-     * @param array|null $listValue
-     *
-     * @return array|null
-     */
-    public function mergeColumns(?array $listValue)
-    {
-        $columnToMergeList = $this->getExportMergeColum();
-        if (!$columnToMergeList || empty($columnToMergeList)) {
-            return $listValue;
-        }
-        
-        $columnList = [];
-        foreach ($columnToMergeList as $columnToMerge) {
-            foreach ($columnToMerge['columns'] as $column) {
-                if (isset($listValue[$column])) {
-                    $columnList[$columnToMerge['name']][] = $listValue[$column];
-                    unset($listValue[$column]);
-                }
-            }
-            $listValue[$columnToMerge['name']] = implode(' ', $columnList[$columnToMerge['name']] ?? []);
-        }
-        
-        return $listValue;
-    }
-    
-    /**
-     * @param array|null $list
-     *
-     * @return array|null
-     */
-    public function formatColumnText(?array &$list)
-    {
-        foreach ($list as $listKey => $listValue) {
-            
-            $mergeColumArray = $this->mergeColumns($listValue);
-            if (!empty($mergeColumArray)) {
-                $list[$listKey] = $mergeColumArray;
-            }
-            
-            $formatArray = $this->getExportFormatFieldText($listValue);
-            if ($formatArray) {
-                $columNameList = array_keys($formatArray);
-                foreach ($formatArray as $formatKey => $formatValue) {
-                    if (isset($formatValue['text'])) {
-                        $list[$listKey][$formatKey] = $formatValue['text'];
-                    }
-                    
-                    if (isset($formatValue['rename'])) {
-                        
-                        $list[$listKey][$formatValue['rename']] = $formatValue['text'] ?? ($list[$listKey][$formatKey] ?? null);
-                        if ($formatValue['rename'] !== $formatKey) {
-                            foreach ($columNameList as $columnKey => $columnValue) {
-                                
-                                if ($formatKey === $columnValue) {
-                                    $columNameList[$columnKey] = $formatValue['rename'];
-                                }
-                            }
-                            
-                            unset($list[$listKey][$formatKey]);
-                        }
-                    }
-                }
-                
-                if (isset($formatArray['reorderColumns']) && $formatArray['reorderColumns']) {
-                    $list[$listKey] = $this->arrayCustomOrder($list[$listKey], $columNameList);
-                }
-            }
-        }
-        
-        return $list;
-    }
-    
-    /**
-     * @param array $arrayToOrder
-     * @param array $orderList
-     *
-     * @return array
-     */
-    function arrayCustomOrder($arrayToOrder, $orderList)
-    {
-        $ordered = [];
-        foreach ($orderList as $key) {
-            if (array_key_exists($key, $arrayToOrder)) {
-                $ordered[$key] = $arrayToOrder[$key];
-            }
-        }
-        return $ordered;
+        throw new \Exception('Failed to export `' . $this->getModelClass() . '` using content-type `' . $contentType . '`', 400);
     }
     
     /**
@@ -442,7 +258,7 @@ class Rest extends \Zemit\Mvc\Controller
      */
     public function countAction()
     {
-        $model = $this->getModelClassName();
+        $model = $this->getModelClass();
         
         /** @var \Zemit\Mvc\Model $entity */
         $entity = new $model();
@@ -462,7 +278,7 @@ class Rest extends \Zemit\Mvc\Controller
      */
     public function newAction()
     {
-        $model = $this->getModelClassName();
+        $model = $this->getModelClass();
         
         /** @var \Zemit\Mvc\Model $entity */
         $entity = new $model();
@@ -482,7 +298,7 @@ class Rest extends \Zemit\Mvc\Controller
      */
     public function validateAction($id = null)
     {
-        $model = $this->getModelClassName();
+        $model = $this->getModelClass();
         
         /** @var \Zemit\Mvc\Model $entity */
         $entity = $this->getSingle($id);
@@ -633,170 +449,5 @@ class Rest extends \Zemit\Mvc\Controller
         }
         
         return $this->setRestResponse($this->view->reordered);
-    }
-    
-    /**
-     * Sending an error as an http response
-     *
-     * @param null $error
-     * @param null $response
-     *
-     * @return \Phalcon\Http\ResponseInterface
-     */
-    public function setRestErrorResponse($code = 400, $status = 'Bad Request', $response = null)
-    {
-        return $this->setRestResponse($response, $code, $status);
-    }
-    
-    /**
-     * Sending rest response as an http response
-     *
-     * @param array|null $response
-     * @param null $status
-     * @param null $code
-     * @param int $jsonOptions
-     * @param int $depth
-     *
-     * @return \Phalcon\Http\ResponseInterface
-     */
-    public function setRestResponse($response = null, $code = null, $status = null, $jsonOptions = 0, $depth = 512)
-    {
-        $debug = $this->config->app->debug ?? false;
-        
-        // keep forced status code or set our own
-        $responseStatusCode = $this->response->getStatusCode();
-        $reasonPhrase = $this->response->getReasonPhrase();
-        $status ??= $reasonPhrase ?: 'OK';
-        $code ??= (int)$responseStatusCode ?: 200;
-        $view = $this->view->getParamsToView();
-        $hash = hash('sha512', json_encode($view));
-        
-        /**
-         * Debug section
-         * - Versions
-         * - Request
-         * - Identity
-         * - Profiler
-         * - Dispatcher
-         * - Router
-         */
-        $request = $debug ? $this->request->toArray() : null;
-        $identity = $debug ? $this->identity->getIdentity() : null;
-        $profiler = $debug && $this->profiler ? $this->profiler->toArray() : null;
-        $dispatcher = $debug ? $this->dispatcher->toArray() : null;
-        $router = $debug ? $this->router->toArray() : null;
-        
-        $api = $debug ? [
-            'php' => phpversion(),
-            'phalcon' => Version::get(),
-            'zemit' => $this->config->core->version,
-            'core' => $this->config->core->name,
-            'app' => $this->config->app->version,
-            'name' => $this->config->app->name,
-        ] : [];
-        $api['version'] = '0.1';
-        
-        $this->response->setStatusCode($code, $code . ' ' . $status);
-        
-        // @todo handle this correctly
-        // @todo private vs public cache type
-        $cache = $this->getCache();
-        if (!empty($cache['lifetime'])) {
-            if ($this->response->getStatusCode() === 200) {
-                $this->response->setCache($cache['lifetime']);
-                $this->response->setEtag($hash);
-            }
-        }
-        else {
-            $this->response->setCache(0);
-            $this->response->setHeader('Cache-Control', 'no-cache, max-age=0');
-        }
-        
-        return $this->response->setJsonContent(array_merge([
-            'api' => $api,
-            'timestamp' => date('c'),
-            'hash' => $hash,
-            'status' => $status,
-            'code' => $code,
-            'response' => $response,
-            'view' => $view,
-        ], $debug ? [
-            'identity' => $identity,
-            'profiler' => $profiler,
-            'request' => $request,
-            'dispatcher' => $dispatcher,
-            'router' => $router,
-            'memory' => Utils::getMemoryUsage(),
-        ] : []), $jsonOptions, $depth);
-    }
-    
-    public function beforeExecuteRoute(Dispatcher $dispatcher)
-    {
-        // @todo use eventsManager from service provider instead
-        $this->eventsManager->enablePriorities(true);
-        // @todo see if we can implement receiving an array of responses globally: V2
-        // $this->eventsManager->collectResponses(true);
-        
-        // retrieve events based on the config roles and features
-        $permissions = $this->config->get('permissions')->toArray() ?? [];
-        $featureList = $permissions['features'] ?? [];
-        $roleList = $permissions['roles'] ?? [];
-        
-        foreach ($roleList as $role => $rolePermission) {
-    
-            if (isset($rolePermission['features'])) {
-                foreach ($rolePermission['features'] as $feature) {
-                    $rolePermission = array_merge_recursive($rolePermission, $featureList[$feature] ?? []);
-                    // @todo remove duplicates
-                }
-            }
-            
-            $behaviorsContext = $rolePermission['behaviors'] ?? [];
-            foreach ($behaviorsContext as $className => $behaviors) {
-                if (is_int($className) || get_class($this) === $className) {
-                    $this->attachBehaviors($behaviors, 'rest');
-                }
-                if ($this->getModelClassName() === $className) {
-                    $this->attachBehaviors($behaviors, 'model');
-                }
-            }
-        }
-    }
-    
-    public function attachBehaviors($behaviors, $eventType = 'rest')
-    {
-        if (!is_array($behaviors)) {
-            $behaviors = [$behaviors];
-        }
-        foreach ($behaviors as $behavior) {
-            $event = new $behavior();
-            if ($event instanceof Injectable) {
-                $event->setDI($this->getDI());
-            }
-            $this->eventsManager->attach($event->eventType ?? $eventType, $event, $event->priority ?? Manager::DEFAULT_PRIORITY);
-        }
-    }
-    
-    /**
-     * Handle rest response automagically
-     *
-     * @param Dispatcher $dispatcher
-     */
-    public function afterExecuteRoute(Dispatcher $dispatcher)
-    {
-        $response = $dispatcher->getReturnedValue();
-        
-        // Avoid breaking default phalcon behaviour
-        if ($response instanceof Response) {
-            return;
-        }
-        
-        // Merge response into view variables
-        if (is_array($response)) {
-            $this->view->setVars($response, true);
-        }
-        
-        // Return our Rest normalized response
-        $dispatcher->setReturnedValue($this->setRestResponse(is_array($response) ? null : $response));
     }
 }

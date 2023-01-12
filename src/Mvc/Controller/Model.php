@@ -18,6 +18,12 @@ use Phalcon\Mvc\ModelInterface;
 use Phalcon\Text;
 use Zemit\Http\Request;
 use Zemit\Identity;
+use Zemit\Mvc\Controller\Model\FilterWhitelist;
+use Zemit\Mvc\Controller\Model\ModelClass;
+use Zemit\Mvc\Controller\Model\Parameter;
+use Zemit\Mvc\Controller\Model\Save;
+use Zemit\Mvc\Controller\Model\SearchWhitelist;
+use Zemit\Mvc\Controller\Model\Whitelist;
 use Zemit\Mvc\Model\Expose\Expose;
 use Zemit\Utils\Slug;
 
@@ -34,41 +40,16 @@ use Zemit\Utils\Slug;
  */
 trait Model
 {
+    use Whitelist;
+    use FilterWhitelist;
+    use SearchWhitelist;
+    use ModelClass;
+    use Parameter;
+    use Save;
+    
     protected $_bind = [];
     protected $_bindTypes = [];
-    
-    /**
-     * Get the current Model Name
-     * @return string|null
-     * @todo remove for v1
-     *
-     * @deprecated change to getModelClassName() instead
-     */
-    public function getModelName()
-    {
-        return $this->getModelClassName();
-    }
-    
-    /**
-     * Get the current Model Class Name
-     *
-     * @return string|null
-     */
-    public function getModelClassName()
-    {
-        return $this->getModelNameFromController();
-    }
-    
-    /**
-     * Get the WhiteList parameters for saving
-     * @todo add a whitelist object that would be able to support one configuration for the search, assign, filter
-     *
-     * @return null|array
-     */
-    protected function getWhiteList()
-    {
-        return null;
-    }
+
     
     /**
      * Get the Flattened WhiteList
@@ -162,28 +143,6 @@ trait Model
     protected function getExportExpose()
     {
         return $this->getExpose();
-    }
-    
-    /**
-     * Get columns merge definition for export
-     *
-     * @return null|array
-     */
-    public function getExportMergeColum()
-    {
-        return null;
-    }
-    
-    /**
-     * Get columns format field text definition for export
-     *
-     * @param array|null $params
-     *
-     * @return null|array
-     */
-    public function getExportFormatFieldText(?array $params = null)
-    {
-        return null;
     }
     
     /**
@@ -323,31 +282,10 @@ trait Model
      */
     protected function getSoftDeleteCondition(): ?string
     {
-        return '[' . $this->getModelClassName() . '].[deleted] = 0';
+        return '[' . $this->getModelClass() . '].[deleted] = 0';
     }
     
-    /**
-     * @param $field
-     * @param string $sanitizer
-     * @param string $glue
-     *
-     * @return array|string[]
-     */
-    public function getParamExplodeArrayMapFilter($field, $sanitizer = 'string', $glue = ',')
-    {
-        $filter = $this->filter;
-        $ret = array_filter(array_map(function ($e) use ($filter, $sanitizer) {
-            
-            // allow to run RAND()
-            if (strrpos($e, 'RAND()') === 0) {
-                return $e;
-            }
-            
-            return $this->appendModelName(trim($filter->sanitize($e, $sanitizer)));
-        }, explode($glue, $this->getParam($field, $sanitizer))));
-        
-        return empty($ret) ? null : $ret;
-    }
+    
     
     /**
      * Set the variables to bind
@@ -407,7 +345,7 @@ trait Model
     {
         $identity ??= $this->identity ?? false;
         $roleList ??= $this->getRoleList();
-        $modelName = $this->getModelClassName();
+        $modelName = $this->getModelClass();
         
         if ($modelName && $identity && !$identity->hasRole($roleList)) {
             $ret = [];
@@ -694,7 +632,7 @@ trait Model
      */
     public function appendModelName($field, $modelName = null)
     {
-        $modelName ??= $this->getModelClassName();
+        $modelName ??= $this->getModelClass();
         
         if (empty($field)) {
             return $field;
@@ -912,51 +850,7 @@ trait Model
         return array_filter($find);
     }
     
-    /**
-     * @param string $key
-     * @param string[]|string|null $filters
-     * @param string|null $default
-     * @param array|null $params
-     *
-     * @return string[]|string|null
-     */
-    public function getParam(string $key, $filters = null, string $default = null, array $params = null)
-    {
-        $params ??= $this->getParams();
-        
-        return $this->filter->sanitize($params[$key] ?? $this->dispatcher->getParam($key, $filters, $default), $filters);
-    }
     
-    /**
-     * Get parameters from
-     * - JsonRawBody, post, put or get
-     * @return mixed
-     */
-    protected function getParams(array $filters = null)
-    {
-        /** @var Request $request */
-        $request = $this->request;
-        
-        if (!empty($filters)) {
-            foreach ($filters as $filter) {
-                $request->setParameterFilters($filter['name'], $filter['filters'], $filter['scope']);
-            }
-        }
-
-//        $params = empty($request->getRawBody()) ? [] : $request->getJsonRawBody(true); // @TODO handle this differently
-        $params = array_merge_recursive(
-            $request->getFilteredQuery(), // $_GET
-            $request->getFilteredPut(), // $_PUT
-            $request->getFilteredPost(), // $_POST
-        );
-    
-        // @todo see if we can prevent phalcon from returning this
-        if (isset($params['_url'])) {
-            unset($params['_url']);
-        }
-        
-        return $params;
-    }
     
     /**
      * Get Single from ID and Model Name
@@ -970,7 +864,7 @@ trait Model
     public function getSingle($id = null, $modelName = null, $with = [], $find = null, $appendCondition = true)
     {
         $id ??= (int)$this->getParam('id', 'int');
-        $modelName ??= $this->getModelClassName();
+        $modelName ??= $this->getModelClass();
         $with ??= $this->getWith();
         $find ??= $this->getFind();
         $condition = '[' . $modelName . '].[id] = ' . (int)$id;
@@ -986,143 +880,7 @@ trait Model
         return $id ? $modelName::findFirstWith($with ?? [], $find ?? []) : false;
     }
     
-    /**
-     * Saving model automagically
-     *
-     * Note:
-     * If a newly created entity can't be retrieved using the ->getSingle
-     * method after it's creation, the entity will be returned directly
-     *
-     * @TODO Support Composite Primary Key
-     *
-     * @param null|int|string $id
-     * @param null|\Zemit\Mvc\Model $entity
-     * @param null|mixed $post
-     * @param null|string $modelName
-     * @param null|array $whiteList
-     * @param null|array $columnMap
-     * @param null|array $with
-     *
-     * @return array
-     */
-    protected function save($id = null, $entity = null, $post = null, $modelName = null, $whiteList = null, $columnMap = null, $with = null)
-    {
-        $single = false;
-        $retList = [];
-        
-        // Get the model name to play with
-        $modelName ??= $this->getModelClassName();
-        $post ??= $this->getParams();
-        $whiteList ??= $this->getWhiteList();
-        $columnMap ??= $this->getColumnMap();
-        $with ??= $this->getWith();
-        $id = (int)$id;
-        
-        // Check if multi-d post
-        if (!empty($id) || !isset($post[0]) || !is_array($post[0])) {
-            $single = true;
-            $post = [$post];
-        }
-        
-        // Save each posts
-        foreach ($post as $key => $singlePost) {
-            $ret = [];
-            
-            $singlePostId = (!$single || empty($id)) ? $this->getParam('id', 'int', $this->getParam('int', 'int', null)) : $id;
-            if (isset($singlePost['id'])) {
-                unset($singlePost['id']);
-            }
-            
-            /** @var \Zemit\Mvc\Model $singlePostEntity */
-            $singlePostEntity = (!$single || !isset($entity)) ? $this->getSingle($singlePostId, $modelName) : $entity;
-            
-            // Create entity if not exists
-            if (!$singlePostEntity && empty($singlePostId)) {
-                $singlePostEntity = new $modelName();
-            }
-            
-            if (!$singlePostEntity) {
-                $ret = [
-                    'saved' => false,
-                    'messages' => [new Message('Entity id `' . $singlePostId . '` not found.', $modelName, 'NotFound', 404)],
-                    'model' => $modelName,
-                    'source' => (new $modelName)->getSource(),
-                ];
-            }
-            else {
-                // allow custom manipulations
-                // @todo move this using events
-                $this->beforeAssign($singlePostEntity, $singlePost, $whiteList, $columnMap);
-                
-                // assign & save
-                $singlePostEntity->assign($singlePost, $whiteList, $columnMap);
-                $ret = $this->saveEntity($singlePostEntity);
-                
-                // refetch & expose
-                $fetch = $this->getSingle($singlePostEntity->getId(), $modelName, $with);
-                $ret[$single ? 'single' : 'list'] = $fetch ? $fetch->expose($this->getExpose()) : false;
-            }
-            
-            $retList [] = $ret;
-        }
-        
-        return $single ? $retList[0] : $retList;
-    }
     
-    /**
-     * Allow overrides to add alter variables before entity assign & save
-     * @param ModelInterface $entity
-     * @param array $post
-     * @param array|null $whiteList
-     * @param array|null $columnMap
-     * @return void
-     */
-    protected function beforeAssign(ModelInterface &$entity, Array &$post, ?Array &$whiteList, ?Array &$columnMap): void {
-    
-    }
-    
-    /**
-     * @param $single
-     *
-     * @return void
-     */
-    protected function saveEntity($entity): array
-    {
-        $ret = [];
-        $ret['saved'] = $entity->save();
-        $ret['messages'] = $entity->getMessages();
-        $ret['model'] = get_class($entity);
-        $ret['source'] = $entity->getSource();
-        $ret['entity'] = $entity->expose($this->getExpose());
-        return $ret;
-    }
-    
-    /**
-     * Try to find the appropriate model from the current controller name
-     *
-     * @param ?string $controllerName
-     * @param ?array $namespaces
-     * @param string $needle
-     *
-     * @return string|null
-     */
-    public function getModelNameFromController(string $controllerName = null, array $namespaces = null, string $needle = 'Models'): ?string
-    {
-        $controllerName ??= $this->dispatcher->getControllerName() ?? '';
-        $namespaces ??= $this->loader->getNamespaces() ?? [];
-        
-        $model = ucfirst(Text::camelize(Text::uncamelize($controllerName)));
-        if (!class_exists($model)) {
-            foreach ($namespaces as $namespace => $path) {
-                $possibleModel = $namespace . '\\' . $model;
-                if (strpos($namespace, $needle) !== false && class_exists($possibleModel)) {
-                    $model = $possibleModel;
-                }
-            }
-        }
-        
-        return class_exists($model) && new $model() instanceof ModelInterface ? $model : null;
-    }
     
     /**
      * Get message from list of entities
